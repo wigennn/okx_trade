@@ -74,5 +74,5 @@ python main.py
 - 定期检查机器人运行状态
 - 市场有风险，投资需谨慎
 
-## 请我杯咖啡
+## 请我喝杯咖啡
 ![img.png](imgs/img.png)![img_1.png](imgs/img_1.png)
