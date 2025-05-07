@@ -7,7 +7,7 @@ import base64
 import json
 import urllib3
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from config import API_KEY, SECRET_KEY, PASSPHRASE, SYMBOL, TIMEFRAME, LEVERAGE
 
 # 禁用SSL警告
@@ -64,8 +64,8 @@ class OKXAPI:
         self.initialized = False
 
     def _get_timestamp(self):
-        """获取ISO格式的UTC时间戳"""
-        return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+        """生成ISO 8601标准UTC时间戳（含'Z'标识）"""
+        return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
     def _sign(self, timestamp, method, request_path, body=''):
         """生成签名"""
@@ -111,6 +111,8 @@ class OKXAPI:
             'x-simulated-trading': '1',  # 模拟盘标识
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
+
+        print(f"请求URL: {url}", f"请求方法: {method}", f"请求时间戳: {timestamp}", f"请求参数: {params}", f"请求体: {body}", f"请求头: {headers}")
         
         try:
             if method == 'GET':
@@ -120,6 +122,7 @@ class OKXAPI:
             
             response.raise_for_status()
             result = response.json()
+            print(f"请求结果: {result}")
             
             # 检查OKX API的响应码
             if result.get('code') != '0':
@@ -241,33 +244,98 @@ class OKXAPI:
             return df
         return self._retry_on_failure(_fetch)
 
-    def get_balance(self):
-        """获取账户余额"""
+    # def get_balance(self):
+    #     """获取账户余额"""
+    #     def _fetch():
+    #         response = self._make_request('GET', '/api/v5/account/balance')
+    #         # 确保返回数值类型
+    #         return float(response['data'][0]['details'][0]['availBal'])
+    #     return self._retry_on_failure(_fetch)
+    
+    def get_balance(self, ccy_filter=None):
+        """获取全币种或指定币种余额"""
         def _fetch():
             response = self._make_request('GET', '/api/v5/account/balance')
-            # 确保返回数值类型
-            return float(response['data'][0]['details'][0]['availBal'])
+            details = response['data'][0]['details']
+            balance_dict = {}
+            
+            # 遍历所有子账户的币种（网页3的账户结构说明）
+            for item in details:
+                ccy = item['ccy']  # 币种代码（如BTC、USDT）
+                avail = float(item['availBal'])  # 可用余额
+                frozen = float(item['frozenBal'])  # 冻结金额
+                total = avail + frozen
+                
+                # 按币种聚合数据（跨子账户合并）
+                if ccy not in balance_dict:
+                    balance_dict[ccy] = {'available': 0.0, 'frozen': 0.0}
+                balance_dict[ccy]['available'] += avail
+                balance_dict[ccy]['frozen'] += frozen
+            
+            # 按条件过滤（如指定币种）
+            if ccy_filter:
+                return balance_dict.get(ccy_filter.upper(), {'available': 0.0, 'frozen': 0.0})
+            return balance_dict
+        
         return self._retry_on_failure(_fetch)
 
     def create_order(self, side, amount, price=None, stop_loss=None, take_profit=None):
-        """创建订单"""
+        """创建订单（支持止盈止损）"""
         def _create():
+            # 1. 基础参数构建
             body = {
                 'instId': self.symbol,
-                'tdMode': 'cross',
+                # 'tdMode': 'cross',  # 全仓模式
+                'tdMode': 'isolated', # 逐仓模式
                 'side': side,
                 'ordType': 'limit' if price else 'market',
-                'sz': str(float(amount)),  # 确保数量为字符串格式的浮点数
+                'sz': f"{float(amount):.8f}".rstrip('0').rstrip('.')  # 避免科学计数法，保留最多8位小数
             }
             if price:
-                body['px'] = str(float(price))  # 确保价格为字符串格式的浮点数
+                body['px'] = f"{float(price):.8f}".rstrip('0').rstrip('.')  # 格式化价格
+            
+            # 2. 止盈止损逻辑修正
             if stop_loss:
-                body['slTriggerPx'] = str(float(stop_loss))
+                if price:
+                    # 限价止损单：委托价需低于触发价（卖出方向）或高于触发价（买入方向）
+                    sl_ord_px = (float(stop_loss) * 0.99) if side == 'sell' else (float(stop_loss) * 1.01)
+                    sl_ord_px = f"{sl_ord_px:.8f}".rstrip('0').rstrip('.')
+                else:
+                    # 市价止损单：必须用-1
+                    sl_ord_px = '-1'
+                body.update({
+                    'slTriggerPx': f"{float(stop_loss):.8f}".rstrip('0').rstrip('.'),
+                    'slOrdPx': sl_ord_px
+                })
+            
             if take_profit:
-                body['tpTriggerPx'] = str(float(take_profit))
+                if price:
+                    # 限价止盈单：委托价需高于触发价（卖出方向）或低于触发价（买入方向）
+                    tp_ord_px = (float(take_profit) * 1.01) if side == 'sell' else (float(take_profit) * 0.99)
+                    tp_ord_px = f"{tp_ord_px:.8f}".rstrip('0').rstrip('.')
+                else:
+                    # 市价止盈单：必须用-1
+                    tp_ord_px = '-1'
+                body.update({
+                    'tpTriggerPx': f"{float(take_profit):.8f}".rstrip('0').rstrip('.'),
+                    'tpOrdPx': tp_ord_px
+                })
+            
+            # 3. 全仓模式预校验（防止错误码51010）
+            if body['tdMode'] == 'cross':
+                self._validate_account_mode('cross')
             
             return self._make_request('POST', '/api/v5/trade/order', body=body)
         return self._retry_on_failure(_create)
+
+    def _validate_account_mode(self, mode='cross'):
+        """验证账户模式是否匹配"""
+        if not hasattr(self, '_account_mode_verified'):
+            response = self._make_request('GET', '/api/v5/account/config')
+            current_mode = response['data'][0]['acctLv']
+            if current_mode != mode:
+                raise ValueError(f"Account mode must be {mode}, current is {current_mode}")
+            self._account_mode_verified = True
 
     def cancel_order(self, order_id):
         """取消订单"""

@@ -11,7 +11,7 @@ PASSPHRASE = os.getenv('OKX_PASSPHRASE')
 
 # 交易配置
 SYMBOL = 'BTC-USDT-SWAP'  # 交易对，添加-SWAP后缀表示永续合约
-TIMEFRAME = '5m'     # 时间周期
+TIMEFRAME = '1m'     # 时间周期
 LEVERAGE = 3         # 杠杆倍数
 POSITION_SIZE = 0.05  # 仓位大小（占总资金的百分比）
 

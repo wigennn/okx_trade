@@ -45,7 +45,9 @@ class TradingBot:
         try:
             # 获取当前行情
             ticker = self.api.get_ticker()
-            current_price = ticker['last']
+            print("ticker:", ticker)
+            current_price = ticker['data'][0]['last']
+            print("current_price:", current_price)
             
             # 检查价格波动
             if self.last_price is not None:
@@ -108,9 +110,9 @@ class TradingBot:
                     
                     # 获取当前持仓和余额
                     self.position = self.api.get_position()
-                    self.balance = self.api.get_balance()
+                    self.balance = self.api.get_balance('USDT')
                     
-                    self.logger.info(f"当前价格: {current_price}, 信号: {latest_signal}, 强度: {signal_strength:.2f}")
+                    self.logger.info(f"当前价格: {current_price}, 信号: {latest_signal}, 强度: {signal_strength:.2f}, 持仓: {self.position}, 余额: {self.balance}")
                     
                     # 交易逻辑
                     if latest_signal == 1 and (self.position is None or self.position['contracts'] <= 0):
